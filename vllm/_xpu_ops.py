@@ -1016,6 +1016,7 @@ def _graph_decode_num_kv_splits(
     max_seqlen_q: int,
     block_table: torch.Tensor | None,
     seqused_k: torch.Tensor | None,
+    window_size: tuple[int, int],
 ) -> int | None:
     """Split-K count for paged decode while an XPU graph is being captured.
 
@@ -1028,12 +1029,14 @@ def _graph_decode_num_kv_splits(
     in a B70 sweep (ctx 2K-32K, Hkv 2/4/8, batch 1-8). It is only used when
     batch * num_kv_heads <= num_xe_cores; larger batches keep the kernel's
     heuristic (a single split there measured up to 35% slower). Eager calls
-    are not affected.
+    and sliding-window layers (whose split count already comes from the
+    window, not max_model_len) are not affected.
     """
     if (
         max_seqlen_q != 1
         or block_table is None
         or seqused_k is None
+        or window_size != (-1, -1)
         or not _xpu_stream_capturing()
     ):
         return None
@@ -1141,7 +1144,13 @@ class xpu_ops:
 
         extra_kwargs = {}
         num_splits_kv = _graph_decode_num_kv_splits(
-            q, k, cu_seqlens_q, max_seqlen_q, block_table, seqused_k
+            q,
+            k,
+            cu_seqlens_q,
+            max_seqlen_q,
+            block_table,
+            seqused_k,
+            real_window_size,
         )
         if num_splits_kv is not None:
             extra_kwargs["num_splits_kv"] = num_splits_kv
