@@ -921,6 +921,27 @@ class Qwen3VLForSequenceClassificationConfig(Qwen3ForSequenceClassificationConfi
     pass
 
 
+class Qwen3NextForCausalLMConfig(VerifyAndUpdateConfig):
+    @staticmethod
+    def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+        """Keep the gated-delta-net recurrent state in float32 for Qwen3-Next
+        when mamba_ssm_cache_dtype is 'auto'. Its HF config has no
+        mamba_ssm_dtype field, so 'auto' would otherwise fall back to the model
+        dtype (bf16) and round the running state after every token; the HF
+        reference keeps it in float32 (as Qwen3.5 configs request explicitly).
+        """
+        cache_config = vllm_config.cache_config
+        if cache_config.mamba_ssm_cache_dtype == "auto":
+            hf_text_config = vllm_config.model_config.hf_text_config
+            cache_config.mamba_ssm_cache_dtype = (
+                getattr(hf_text_config, "mamba_ssm_dtype", None) or "float32"
+            )
+            logger.info(
+                "Updating mamba_ssm_cache_dtype to '%s' for Qwen3-Next model",
+                cache_config.mamba_ssm_cache_dtype,
+            )
+
+
 class Qwen3_5ForConditionalGenerationConfig(VerifyAndUpdateConfig):
     @staticmethod
     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
@@ -1223,6 +1244,7 @@ MODELS_CONFIG_MAP: dict[str, type[VerifyAndUpdateConfig]] = {
     "Qwen2ForProcessRewardModel": Qwen2ForProcessRewardModelConfig,
     "Qwen2ForRewardModel": Qwen2ForRewardModelConfig,
     "Qwen3ForSequenceClassification": Qwen3ForSequenceClassificationConfig,
+    "Qwen3NextForCausalLM": Qwen3NextForCausalLMConfig,
     "Qwen3VLForSequenceClassification": Qwen3VLForSequenceClassificationConfig,
     "Qwen3_5ForCausalLM": Qwen3_5ForCausalLMConfig,
     "Qwen3_5ForConditionalGeneration": Qwen3_5ForConditionalGenerationConfig,
