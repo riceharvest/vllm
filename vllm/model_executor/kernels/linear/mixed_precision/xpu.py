@@ -97,13 +97,18 @@ class XPUwNa16LinearKernel(MPLinearKernel):
     ) -> torch.Tensor:
         reshaped_x = x.reshape(-1, x.shape[-1])
         w_q, w_s, w_zp = self._get_weight_params(layer)
+        # channelwise checkpoints use group_size -1: one group over the whole
+        # (per-partition) K, which the XPU op expects as an explicit size
+        group_size = self.config.group_size
+        if group_size == -1:
+            group_size = reshaped_x.shape[-1]
         out = torch.ops._xpu_C.int4_gemm_w4a16(
             reshaped_x,
             w_q.t(),
             bias if bias is not None else None,
             w_s,
             w_zp,
-            self.config.group_size,
+            group_size,
             None,  # Retained by the external XPU op ABI.
         )
         return out
@@ -197,6 +202,10 @@ class XPUW4A8IntLinearKernel(MPLinearKernel):
         reshaped_x = x.reshape(-1, x.shape[-1])  # [M, K]
         from vllm._xpu_ops import xpu_ops as ops
 
+        group_size = self.config.group_size
+        if group_size == -1:  # channelwise: one group over the whole K
+            group_size = reshaped_x.shape[-1]
+
         # TODO: static and asymmetric quantization case
         # Common code for CompressedTensorsW4A8Int does not read act symmetry data
         quant_x, x_scale, x_zero = ops.dynamic_per_token_int8_quant_ref(
@@ -210,7 +219,7 @@ class XPUW4A8IntLinearKernel(MPLinearKernel):
             layer.weight_packed.t(),
             layer.weight_scale,
             layer.weight_zero_point,
-            self.config.group_size,
+            group_size,
             None,  # Retained by the external XPU op ABI.
             bias,
         )
