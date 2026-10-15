@@ -1085,6 +1085,15 @@ class FlashAttentionImpl(AttentionImpl):
             # In flash-attn, setting logits_soft_cap as 0 means no soft cap.
             logits_soft_cap = 0
         self.logits_soft_cap = logits_soft_cap
+        if current_platform.is_xpu() and (
+            self.alibi_slopes is not None or self.logits_soft_cap
+        ):
+            # vllm-xpu-kernels' flash attention accepts both arguments but ignores
+            # them, which silently changes the attention output.
+            raise NotImplementedError(
+                "FLASH_ATTN on XPU does not implement logit softcapping or ALiBi; "
+                "use --attention-backend TRITON_ATTN for this model."
+            )
         self.kv_sharing_target_layer_name = kv_sharing_target_layer_name
 
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
