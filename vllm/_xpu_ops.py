@@ -175,6 +175,12 @@ def _fused_add_nemotron_layer_norm_impl(
     torch.ops._C.fused_add_nemotron_layer_norm(input, residual, weight, bias, epsilon)
 
 
+# Minimum decodes in a mixed prefill+decode step before the GDN decodes are
+# split off to the recurrent kernels (measured on BMG: 1 decode is slower
+# split, 8 decodes are faster).
+_GDN_SPLIT_MIN_DECODES = 4
+
+
 def _gdn_attention_core_xpu_impl(
     core_attn_out: torch.Tensor,
     z: torch.Tensor,
@@ -229,6 +235,78 @@ def _gdn_attention_core_xpu_impl(
     conv_weights = self.conv1d.weight.view(
         self.conv1d.weight.size(0), self.conv1d.weight.size(2)
     )
+
+    # Mixed non-spec step: when prefills are present, the XE2 kernels run every
+    # sequence through the chunk path, so each 1-token decode is padded to a
+    # 64-token chunk. Peel the decodes (the front slice, see the metadata
+    # builder) off to the recurrent kernels, as the CUDA path does. Below
+    # _GDN_SPLIT_MIN_DECODES decodes the extra launch costs more than it saves.
+    if (
+        spec_sequence_masks is None
+        and num_prefills > 0
+        and num_decodes >= _GDN_SPLIT_MIN_DECODES
+        and attn_metadata.prefill_query_start_loc is not None
+        and attn_metadata.prefill_state_indices is not None
+        and attn_metadata.prefill_has_initial_state is not None
+    ):
+        assert non_spec_query_start_loc is not None
+        assert non_spec_state_indices_tensor is not None
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        num_prefill_tokens = attn_metadata.num_prefill_tokens
+        dec = slice(0, num_decode_tokens)
+        pre = slice(num_decode_tokens, num_decode_tokens + num_prefill_tokens)
+        for rows, n_pre, n_dec, his, qsl, state_idx, n_tok in (
+            (
+                dec,
+                0,
+                num_decodes,
+                None,  # decodes always have prior state
+                non_spec_query_start_loc[: num_decodes + 1],
+                non_spec_state_indices_tensor[:num_decodes],
+                num_decode_tokens,
+            ),
+            (
+                pre,
+                num_prefills,
+                0,
+                attn_metadata.prefill_has_initial_state[:num_prefills],
+                attn_metadata.prefill_query_start_loc[: num_prefills + 1],
+                attn_metadata.prefill_state_indices[:num_prefills].contiguous(),
+                num_prefill_tokens,
+            ),
+        ):
+            torch.ops._xpu_C.gdn_attention(
+                core_attn_out[rows],
+                z[rows],
+                projected_states_qkvz[rows],
+                projected_states_ba[rows],
+                self.num_k_heads,
+                self.num_v_heads,
+                self.head_k_dim,
+                self.head_v_dim,
+                conv_state=self.kv_cache[0],
+                ssm_state=self.kv_cache[1],
+                conv_weights=conv_weights,
+                conv_bias=self.conv1d.bias,
+                activation=self.activation,
+                A_log=self.A_log,
+                dt_bias=self.dt_bias,
+                num_prefills=n_pre,  # type: ignore[attr-defined]
+                num_decodes=n_dec,  # type: ignore[attr-defined]
+                num_spec_decodes=0,  # type: ignore[attr-defined]
+                has_initial_state=his,  # type: ignore[attr-defined]
+                non_spec_query_start_loc=qsl,  # type: ignore[attr-defined]
+                non_spec_token_indx=None,  # type: ignore[attr-defined]
+                non_spec_state_indices_tensor=state_idx,  # type: ignore[attr-defined]
+                spec_query_start_loc=None,  # type: ignore[attr-defined]
+                spec_token_indx=None,  # type: ignore[attr-defined]
+                spec_state_indices_tensor=None,
+                num_accepted_tokens=None,  # type: ignore[attr-defined]
+                num_actual_tokens=n_tok,  # type: ignore[attr-defined]
+                tp_size=self.tp_size,
+                reorder_input=not self.gqa_interleaved_layout,
+            )
+        return
 
     torch.ops._xpu_C.gdn_attention(
         core_attn_out,
