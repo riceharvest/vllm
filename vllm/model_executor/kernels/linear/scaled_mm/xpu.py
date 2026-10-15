@@ -190,6 +190,12 @@ class XPUW8A16FP8LinearKernel(FP8ScaledMMLinearKernel):
 
 
 class XPUFp8BlockScaledMMKernel(Fp8BlockScaledMMLinearKernel):
+    # Xe2 has no FP8 XMX, so oneDNN up-converts fp8 activations anyway.
+    # Keep A in bf16/fp16 and use the weight-only (W8A16) GEMM with the same
+    # [k_blocks, n_blocks] block scale: faster at every M, lower error, and no
+    # per-token-group quant kernel per linear.
+    apply_input_quant = False
+
     @classmethod
     def is_supported(
         cls, compute_capability: int | None = None
@@ -274,11 +280,6 @@ class XPUFp8BlockScaledMMKernel(Fp8BlockScaledMMLinearKernel):
         # B is [N, K]; .t() gives [K, N] view (no copy).
         # Bs is stored as [n_blocks, k_blocks] view; .t() recovers the
         # contiguous [k_blocks, n_blocks] buffer that oneDNN expects.
-        return torch.ops._xpu_C.fp8_gemm(
-            A,
-            B.t(),
-            self.config.out_dtype,
-            As,
-            Bs.t(),
-            torch.Tensor(),
-        )
+        # A is the unquantized activation (apply_input_quant = False), so As
+        # is only a placeholder and is not used.
+        return torch.ops._xpu_C.fp8_gemm_w8a16(A, B.t(), Bs.t(), None)
