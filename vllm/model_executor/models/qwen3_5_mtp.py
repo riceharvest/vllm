@@ -331,7 +331,14 @@ class Qwen3_5MTP(LocalArgmaxMixin, nn.Module, SupportsMultiModal, SupportsPP):
                 yield name, weight
 
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(remap_weight_names(weights))
+        result = loader.load_weights(remap_weight_names(weights))
+        if os.environ.get("B70_DRAFT_MTP_INT4") == "1":
+            from vllm.model_executor.models.b70_draft_mtp_int4 import (
+                build_draft_mtp_int4,
+            )
+
+            build_draft_mtp_int4(self)
+        return result
 
 
 class Qwen3_5MoeMTP(Qwen3_5MTP, QwenNextMixtureOfExperts):
