@@ -1109,6 +1109,43 @@ def _selective_scan_fwd_kernel(
 
 
 # Global flag to ensure ops are registered only once
+
+# B70_GRAPH_KV_SPLITS: decode split-K count under XPU-graph capture (see cookbook patch_xpu_graph_kv_splits.py)
+_B70_XE_CORES: dict[int, int] = {}
+
+
+def _b70_num_xe_cores(device: torch.device) -> int:
+    # torch exposes the Xe-core count as gpu_subslice_count (32 on Arc Pro B70); vllm_xpu_kernels'
+    # _infer_num_xe_cores looks for property names torch 2.14 does not expose and falls back to 20.
+    idx = device.index if device.index is not None else torch.xpu.current_device()
+    n = _B70_XE_CORES.get(idx)
+    if n is None:
+        try:
+            n = int(getattr(torch.xpu.get_device_properties(idx), "gpu_subslice_count", 0) or 0)
+        except Exception:
+            n = 0
+        _B70_XE_CORES[idx] = n
+    return n
+
+
+def _b70_graph_decode_num_kv_splits(q, k, cu_seqlens_q, max_seqlen_q, block_table, seqused_k, window_size):
+    import os
+
+    if os.environ.get("B70_GRAPH_KV_SPLITS", "1") == "0":
+        return None
+    if max_seqlen_q != 1 or block_table is None or seqused_k is None:
+        return None
+    if window_size is not None and tuple(window_size) != (-1, -1):
+        return None  # xk already sizes splits from the window
+    is_capturing = getattr(torch.xpu, "is_current_stream_capturing", None)
+    if is_capturing is None or not is_capturing():
+        return None
+    cores = _b70_num_xe_cores(q.device)
+    wgs_per_split = (cu_seqlens_q.numel() - 1) * k.size(2)
+    if cores <= 0 or wgs_per_split <= 0 or wgs_per_split > cores:
+        return None
+    return min(32, cores // wgs_per_split)
+
 _OPS_REGISTERED = False
 
 
@@ -1207,6 +1244,13 @@ class xpu_ops:
             assert len(window_size) == 2
             real_window_size = (window_size[0], window_size[1])  # noqa: F841
 
+        # B70_GRAPH_KV_SPLITS
+        extra_kwargs = {}
+        num_splits_kv = _b70_graph_decode_num_kv_splits(
+            q, k, cu_seqlens_q, max_seqlen_q, block_table, seqused_k, real_window_size
+        )
+        if num_splits_kv is not None:
+            extra_kwargs["num_splits_kv"] = num_splits_kv
         return flash_attn_varlen_func(
             out=out,
             q=q,
@@ -1228,6 +1272,7 @@ class xpu_ops:
             q_descale=q_descale,
             k_descale=k_descale,
             v_descale=v_descale,
+            **extra_kwargs,
         )
 
     @staticmethod
