@@ -99,9 +99,17 @@ def build_draft_lmhead_int4(model) -> None:
         return
     print("[B70] draft LM head INT4: cuantizando lm_head fp16 "
           f"{tuple(weight.shape)} -> INT4 g128 sym (one-time)", flush=True)
-    qweight, scales, qzeros, group_size = quantize_lmhead_to_int4(
-        weight.detach()
-    )
+    # B70_DRAFT_VOCAB
+    _vf = os.environ.get("B70_DRAFT_VOCAB")
+    _w = weight.detach()
+    if _vf:
+        import json as _json
+        _ids = torch.tensor(sorted(_json.load(open(_vf))), dtype=torch.long, device=_w.device)
+        model._b70_draft_vocab_ids = _ids
+        model._b70_draft_vocab_full = _w.shape[0]
+        _w = _w.index_select(0, _ids).contiguous()
+        print(f"[B70] draft vocab: {_ids.numel()} / {weight.shape[0]} rows", flush=True)
+    qweight, scales, qzeros, group_size = quantize_lmhead_to_int4(_w)
     model._b70_lmhead_int4 = (qweight, scales, qzeros, group_size)
     fp16_bytes = weight.numel() * weight.element_size()
     int4_bytes = qweight.numel() * qweight.element_size() + (
@@ -118,6 +126,11 @@ def draft_lmhead_int4_logits(model, hidden_states: torch.Tensor) -> torch.Tensor
     logits = int4_lmhead_logits(
         hidden_states, qweight, scales, qzeros, group_size
     )
+    _ids = getattr(model, "_b70_draft_vocab_ids", None)
+    if _ids is not None:  # B70_DRAFT_VOCAB
+        full = logits.new_full((*logits.shape[:-1], model._b70_draft_vocab_full), float("-inf"))
+        full.index_copy_(full.dim() - 1, _ids, logits)
+        logits = full
     org = getattr(getattr(model, "logits_processor", None), "org_vocab_size", None)
     if org is not None and logits.shape[-1] > org:
         logits = logits[..., :org]
