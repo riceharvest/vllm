@@ -252,6 +252,11 @@ class Qwen3_5Model(Qwen3NextModel):
             self.vocab_size,
             config.hidden_size,
         )
+        # B70_EMBED_UVA
+        import os as _b70os
+        if _b70os.environ.get('B70_EMBED_UVA', '1') == '1':
+            from vllm.model_executor.offloader.base import get_offloader as _b70go
+            _b70go().wrap_modules(iter([self.embed_tokens]), prefix=f"{prefix}.embed_tokens")
 
         def get_layer(prefix: str):
             return Qwen3_5DecoderLayer(

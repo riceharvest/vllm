@@ -86,6 +86,11 @@ class Qwen3_5MultiTokenPredictor(nn.Module):
             self.vocab_size,
             config.hidden_size,
         )
+        # B70_EMBED_UVA
+        import os as _b70os
+        if _b70os.environ.get('B70_EMBED_UVA', '1') == '1':
+            from vllm.model_executor.offloader.base import get_offloader as _b70go
+            _b70go().wrap_modules(iter([self.embed_tokens]), prefix=f"{prefix}.embed_tokens")
 
         # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is
         # missing from hf_quant_config.json exclude_modules. Force unquantized.
