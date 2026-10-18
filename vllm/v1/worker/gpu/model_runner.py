@@ -23,6 +23,9 @@ from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from copy import deepcopy
 from dataclasses import replace
+
+# B70_EAGER_PAD_TOKENS: bucket for the token count of eager steps (0/1 = off)
+_B70_EAGER_PAD = int(__import__("os").environ.get("B70_EAGER_PAD_TOKENS", "0") or 0)
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -1797,6 +1800,22 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             uniform_decode=uniform_tok_count == self.decode_query_len,
         )
 
+        # B70_EAGER_PAD_TOKENS: bucket eager token counts so the per-M oneDNN
+        # primitives (int4 GEMM cache keyed on exact M) are reused.
+        if (
+            _B70_EAGER_PAD > 1
+            and not dummy_run
+            and batch_desc.cg_mode == CUDAGraphMode.NONE
+            and batch_desc.num_tokens > 0
+            and self.pcp_manager is None
+            and self.dp_size == 1
+        ):
+            _b70_padded = min(
+                -(-batch_desc.num_tokens // _B70_EAGER_PAD) * _B70_EAGER_PAD,
+                self.max_num_tokens,
+            )
+            if _b70_padded > batch_desc.num_tokens:
+                batch_desc = replace(batch_desc, num_tokens=_b70_padded)
         if batch_desc.num_tokens == 0:
             # All DP ranks have zero tokens to run.
             empty_output = self.kv_connector.no_forward(scheduler_output)
