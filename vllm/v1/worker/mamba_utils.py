@@ -472,6 +472,14 @@ def postprocess_mamba_fused_kernel(
     if src_block_idx == dest_block_idx and state_idx == 0 and tile_idx == 0:
         tl.store(num_accepted_tokens_out_ptr + req_idx, 1)
 
+    # B70_BACKWARD_COPY_GUARD_POSTPROCESS (vllm#53505): una copia con
+    # dest_block_idx < src_block_idx pisaria con el estado de una posicion
+    # posterior la columna anterior (estado inicial en curso y/o pagina ya
+    # publicada en el prefix cache). Solo src == dest (deslizamiento
+    # intra-bloque) es legitimo ademas del avance normal src < dest.
+    if src_block_idx > dest_block_idx:
+        return
+
     # Skip no-op self-copy.
     if src_block_idx == dest_block_idx and accept_token_bias == 0:
         return
@@ -603,6 +611,14 @@ def precopy_mamba_align_fused_kernel(
     # Fresh state, or still writing the same block: kernels locate the initial
     # state in-block via num_accepted (preserved when no boundary is crossed),
     # so there is nothing to copy.
+    # B70_BACKWARD_COPY_GUARD_PRECOPY (vllm#53505): la guarda original solo
+    # descarta state nuevo (src_col < 0) y no-op (src_col == dst_col); una
+    # columna de origen POR DETRAS de la de destino (num_computed retrocedido
+    # tras retract/preemption/resume) copiaria hacia atras y corromperia el
+    # estado de un boundary anterior, posiblemente ya cacheado.
+    if src_col > dst_col:
+        return
+
     if src_col < 0 or src_col == dst_col:
         return
 
@@ -1353,6 +1369,12 @@ def collect_mamba_copy_meta(
     req_state: CachedRequestState,
     forward_context: dict[str, Any],
 ) -> None:
+    # B70_BACKWARD_COPY_GUARD_COPY_META (vllm#53505): mismo criterio que en los
+    # kernels; aqui ademas cleanup_mamba_state_idx documenta que un entry
+    # obsoleto puede apuntar mas alla de la asignacion nueva (src > dest).
+    if src_block_idx > dest_block_idx:
+        return
+
     if src_block_idx == dest_block_idx and accept_token_bias == 0:
         return
 
