@@ -32,8 +32,22 @@ def quantize_to_int4(weight: torch.Tensor, group_size: int = 128):
     for i in range(0, N, chunk):
         wc = weight[i : i + chunk].float()
         wg = wc.view(wc.shape[0], num_groups, group_size)
-        maxabs = wg.abs().amax(dim=-1)
+        # B70_DRAFT_INT4_MSE=1: per-group clip factor that minimizes the squared error (same sym int4 format; opt-in)
+        maxabs = wg.abs().amax(dim=-1).clamp_min(1e-8)
         scale = maxabs / 7.0
+        if __import__('os').environ.get('B70_DRAFT_INT4_MSE', '0') == '1':
+            _b70_best = None
+            for _b70_s in (1.0, 0.975, 0.95, 0.925, 0.9, 0.875, 0.85, 0.825, 0.8, 0.775, 0.75, 0.725, 0.7):
+                _b70_sc = maxabs * (_b70_s / 7.0)
+                _b70_q = (wg / _b70_sc.unsqueeze(-1)).round().clamp(-8, 7)
+                _b70_err = ((_b70_q * _b70_sc.unsqueeze(-1) - wg) ** 2).sum(dim=-1)
+                if _b70_best is None:
+                    _b70_best, scale = _b70_err, _b70_sc
+                else:
+                    _b70_m = _b70_err < _b70_best
+                    _b70_best = torch.where(_b70_m, _b70_err, _b70_best)
+                    scale = torch.where(_b70_m, _b70_sc, scale)
+            del _b70_best, _b70_sc, _b70_q, _b70_err
         q = (wg / scale.unsqueeze(-1)).round().clamp(-8, 7).to(torch.int32)
         stored = q + 8
         qv = stored.view(wc.shape[0], num_groups, group_size // 8, 8)
