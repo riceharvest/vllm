@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os  # B70_EAGLE_DROP
 import itertools
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -1412,6 +1413,31 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
         return num_skipped_tokens
 
 
+def _b70_eagle_drop_fine_units(scale_factor: int) -> int:
+    """B70_EAGLE_DROP (rama fina): unidades de hash que descarta el drop EAGLE en
+    ``MambaManager.find_longest_cache_hit``.
+
+    Controlado por el env B70_EAGLE_DROP_FINE_UNITS: 1 (default) = la semantica
+    del comentario de kv_cache_coordinator; page/full/scale = pagina de mamba
+    entera (scale_factor unidades). Nunca mas de una pagina: bajar mas no
+    protege nada extra y solo cuesta reutilizacion.
+    """
+    raw = os.environ.get("B70_EAGLE_DROP_FINE_UNITS", "1").strip().lower()
+    if raw in ("page", "full", "scale", "scale_factor", "block"):
+        units = scale_factor
+    else:
+        try:
+            units = int(raw)
+        except ValueError:
+            raise RuntimeError(
+                "B70_EAGLE_DROP_FINE_UNITS must be an integer >= 1 or one of "
+                f"page/full/scale; got {raw!r}") from None
+    if units < 1:
+        raise RuntimeError(
+            f"B70_EAGLE_DROP_FINE_UNITS must be >= 1, got {units}")
+    return min(units, scale_factor)
+
+
 class MambaManager(SingleTypeKVCacheManager):
     supports_fine_grained_hash_lookup: ClassVar[bool] = True
 
@@ -1489,6 +1515,17 @@ class MambaManager(SingleTypeKVCacheManager):
             max_num_partial_units = min(
                 max_length // hash_block_size, len(block_hashes)
             )
+            if drop_eagle_block and max_num_partial_units > 0:
+                # B70_EAGLE_DROP_FINE_HUNK (port de vllm#48375 a la rama fina):
+                # el techo incluia el ultimo hash unit y no se descartaba nada,
+                # asi que su snapshot (posiblemente escrito sobre posiciones de
+                # draft rechazadas) se reutilizaba. Se bajan
+                # B70_EAGLE_DROP_FINE_UNITS unidades (1 por defecto; "page" para
+                # una pagina de mamba entera), sin bajar nunca de 0.
+                max_num_partial_units -= min(
+                    _b70_eagle_drop_fine_units(scale_factor),
+                    max_num_partial_units,
+                )
             for fine_idx in range(max_num_partial_units - 1, -1, -1):
                 num_tokens = (fine_idx + 1) * hash_block_size
                 block_hash = block_hashes[fine_idx]
@@ -1504,6 +1541,13 @@ class MambaManager(SingleTypeKVCacheManager):
             return computed_blocks, hit_length
 
         max_num_blocks = max_length // block_size
+        if drop_eagle_block and max_num_blocks > 0:
+            # B70_EAGLE_DROP_COARSE_HUNK (port de vllm#48375): descarta la
+            # ultima pagina emparejada, como hacen los demas managers gracias al
+            # eagle_margin del coordinador. Siempre EXACTAMENTE 1 bloque: aqui la
+            # unidad de busqueda ya es la pagina de mamba, y el parametro de la
+            # rama fina no aplica a esta rama.
+            max_num_blocks -= 1
         # Search from right to left and early stop when a match is found.
         for i in range(max_num_blocks - 1, -1, -1):
             if cached_block := block_pool.get_cached_block(
