@@ -1,3 +1,4 @@
+# B70_ASYM_GPTQ
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
@@ -80,9 +81,7 @@ class XPUwNa16LinearKernel(MPLinearKernel):
 
         if self.config.zero_points:
             # (FIXME): maybe zero points should also be transposed.
-            getattr(layer, self.w_zp_name).data = (
-                getattr(layer, self.w_zp_name).data.t().contiguous()
-            )
+            pass  # B70: qzeros already [K/G, N/8] packed along N
         else:
             weight_zero_point = torch.Tensor([8]).to(torch.int8).to("xpu")
             setattr(
