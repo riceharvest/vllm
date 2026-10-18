@@ -1,3 +1,4 @@
+# B70_TARGET_FP8
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """A layer that compute logits from hidden_stats."""
@@ -140,6 +141,9 @@ class LogitsProcessor(PluggableLayer):
         embedding_bias: torch.Tensor | None,
     ) -> torch.Tensor:
         """Project hidden states through the lm_head, honoring head_dtype."""
+        if getattr(lm_head, "_b70_fp8", None) is not None:
+            from vllm.model_executor.models.b70_target_lmhead_fp8 import logits as _b70_lg
+            return _b70_lg(lm_head, hidden_states)
         if self.head_dtype is None or self.head_dtype == hidden_states.dtype:
             return lm_head.quant_method.apply(
                 lm_head, hidden_states, bias=embedding_bias

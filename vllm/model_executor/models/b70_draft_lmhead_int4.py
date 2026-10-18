@@ -1,3 +1,4 @@
+# B70_TARGET_FP8
 """B70 Fase S runtime helper: draft MTP LM head INT4 g128 sym.
 
 Escribido por patch_draft_lmhead_int4.py dentro del contenedor. Provee la
@@ -93,6 +94,14 @@ def build_draft_lmhead_int4(model) -> None:
         return
     head = getattr(model, "lm_head", None)
     weight = getattr(head, "weight", None)
+    _pre = getattr(head, "_b70_draft_int4", None)
+    if _pre is not None:
+        model._b70_lmhead_int4 = tuple(_pre[:4])
+        if _pre[4] is not None:
+            model._b70_draft_vocab_ids = _pre[4]
+            model._b70_draft_vocab_full = _pre[5]
+        print("[B70] draft LM head INT4: using prebuilt head", flush=True)
+        return
     if weight is None:
         print("[B70] draft LM head INT4: lm_head.weight no disponible; "
               "draft sigue por fp16", flush=True)

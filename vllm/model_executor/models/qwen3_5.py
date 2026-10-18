@@ -1,3 +1,4 @@
+# B70_TARGET_FP8
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
@@ -297,7 +298,13 @@ class Qwen3_5Model(Qwen3NextModel):
                 ckpt_prefix="mlp.shared_expert",
             )
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        _b70_loaded = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        from vllm.model_executor.models.b70_target_lmhead_fp8 import convert as _b70_cv
+        # inner LM: convert only in the call that loaded lm_head (AutoWeightsLoader may call it once per
+        # contiguous run of checkpoint keys); outer wrapper: convert at the end (idempotent)
+        if not hasattr(self, 'lm_head') or any(n.endswith('lm_head.weight') for n in _b70_loaded):
+            _b70_cv(self if hasattr(self, 'lm_head') else getattr(self, 'language_model', self))
+        return _b70_loaded
 
 
 class Qwen3_5ForCausalLMBase(
@@ -442,7 +449,13 @@ class Qwen3_5ForCausalLMBase(
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        _b70_loaded = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        from vllm.model_executor.models.b70_target_lmhead_fp8 import convert as _b70_cv
+        # inner LM: convert only in the call that loaded lm_head (AutoWeightsLoader may call it once per
+        # contiguous run of checkpoint keys); outer wrapper: convert at the end (idempotent)
+        if not hasattr(self, 'lm_head') or any(n.endswith('lm_head.weight') for n in _b70_loaded):
+            _b70_cv(self if hasattr(self, 'lm_head') else getattr(self, 'language_model', self))
+        return _b70_loaded
 
     def get_mrope_input_positions(
         self,
@@ -608,7 +621,13 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        _b70_loaded = loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
+        from vllm.model_executor.models.b70_target_lmhead_fp8 import convert as _b70_cv
+        # inner LM: convert only in the call that loaded lm_head (AutoWeightsLoader may call it once per
+        # contiguous run of checkpoint keys); outer wrapper: convert at the end (idempotent)
+        if not hasattr(self, 'lm_head') or any(n.endswith('lm_head.weight') for n in _b70_loaded):
+            _b70_cv(self if hasattr(self, 'lm_head') else getattr(self, 'language_model', self))
+        return _b70_loaded
 
     @classmethod
     def get_mamba_state_dtype_from_config(
